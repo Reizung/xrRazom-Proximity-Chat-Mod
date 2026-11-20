@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="windows-1251"?>
+<string_table>
+	<string id="ui_mcm_menu_xr_razom_voip">
+		<text>xrRazom VOIP</text>
+	</string>
+	<string id="ui_mcm_xr_razom_voip_title">
+		<text>xrRazom Proximity &amp; Radio VOIP</text>
+	</string>
+	<string id="ui_mcm_xr_razom_voip_radio_ptt_key">
+		<text>Walkie-Talkie Push-to-Talk Key</text>
+	</string>
+	<string id="ui_mcm_xr_razom_voip_radio_ptt_key_desc">
+		<text>Hold this key to transmit over the long-range walkie-talkie radio. Proximity voice is always active without pressing a key; pressing PTT nearby transmits both proximity and radio audio. Default: Z.</text>
+	</string>
+	<string id="ui_mcm_xr_razom_voip_always_has_radio">
+		<text>Always Have Walkie-Talkie (No Gear Required)</text>
+	</string>
+	<string id="ui_mcm_xr_razom_voip_always_has_radio_desc">
+		<text>When enabled (default), every player always has an active walkie-talkie without needing any item in inventory.</text>
+	</string>
+	<string id="ui_mcm_xr_razom_voip_require_equipped_radio">
+		<text>Require Walkie-Talkie Equipped in Device Slot</text>
+	</string>
+	<string id="ui_mcm_xr_razom_voip_require_equipped_radio_desc">
+		<text>Only used if "Always Have Walkie-Talkie" is disabled. When checked, a walkie-talkie must be equipped in slot 9; otherwise having one anywhere in inventory is enough.</text>
+	</string>
+	<string id="ui_mcm_xr_razom_voip_ptt_sound">
+		<text>In-Game PTT Beep Sound</text>
+	</string>
+	<string id="ui_mcm_xr_razom_voip_ptt_sound_desc">
+		<text>Plays a subtle radio key click/beep inside the game when pressing or releasing the Push-to-Talk key. Disable if you only want the VOIP client's radio chirp.</text>
+	</string>
+</string_table>

@@ -1,0 +1,522 @@
+--[[
+  xrRazom VOIP Telemetry — STALKER Anomaly 1.5.3 / G.A.M.M.A. Co-op
+  Exports local camera pose, PTT walkie-talkie state, and connected xrRazom
+  peer positions + wall occlusion atomically to $app_data_root$/voip_telemetry.json.
+]]
+
+local UPDATE_INTERVAL_MS = 50   -- ~20 Hz
+local RAY_START_OFFSET   = 0.45
+local RAY_END_CLEARANCE  = 0.55
+local RQT_STATIC         = 2    -- rq_target.rqtStatic
+local INVALID_ID         = 65535
+
+local last_update_ms     = 0
+local radio_tx           = false
+local has_radio          = true
+local actor_menu_mode    = 0
+local use_direct_write   = false
+
+local tmp_path           = nil
+local final_path         = nil
+local _ray               = nil
+local _ray_pos           = nil
+local _ray_dir           = nil
+local _snd_press         = nil
+local _snd_release       = nil
+local _snd_checked       = false
+
+local math_sqrt          = math.sqrt
+local string_format      = string.format
+local string_gsub        = string.gsub
+local string_find        = string.find
+local table_concat       = table.concat
+
+local function ensure_paths()
+    if final_path then return true end
+    if not getFS then return false end
+    local ok, base = pcall(function() return getFS():update_path("$app_data_root$", "") end)
+    if not ok or not base or base == "" then return false end
+    tmp_path   = base .. "voip_telemetry.tmp"
+    final_path = base .. "voip_telemetry.json"
+    return true
+end
+
+local function json_escape(s)
+    s = tostring(s or "")
+    s = string_gsub(s, "\\", "\\\\")
+    s = string_gsub(s, "\"", "\\\"")
+    s = string_gsub(s, "\r", "\\r")
+    s = string_gsub(s, "\n", "\\n")
+    s = string_gsub(s, "\t", "\\t")
+    return s
+end
+
+local function fmt_num(n)
+    if type(n) ~= "number" or n ~= n then
+        return "0.0"
+    end
+    return string_format("%.4f", n)
+end
+
+local function fmt_vec(v)
+    if not v then
+        return "{\"x\":0.0,\"y\":0.0,\"z\":0.0}"
+    end
+    return string_format("{\"x\":%s,\"y\":%s,\"z\":%s}", fmt_num(v.x), fmt_num(v.y), fmt_num(v.z))
+end
+
+local function get_ptt_key()
+    if xr_razom_voip_mcm and xr_razom_voip_mcm.get_ptt_key then
+        return xr_razom_voip_mcm.get_ptt_key()
+    end
+    return (DIK_keys and DIK_keys.DIK_Z) or 44
+end
+
+local function check_has_radio()
+    if xr_razom_voip_mcm and xr_razom_voip_mcm.get_always_has_radio then
+        if xr_razom_voip_mcm.get_always_has_radio() then
+            return true
+        end
+    else
+        return true
+    end
+
+    local actor = db.actor
+    if not actor then return false end
+
+    local req_equipped = xr_razom_voip_mcm and xr_razom_voip_mcm.get_require_equipped_radio
+        and xr_razom_voip_mcm.get_require_equipped_radio()
+
+    if req_equipped then
+        local dev = actor:item_in_slot(9)
+        local sec = dev and dev:section()
+        return sec ~= nil and string_find(sec, "walkie_talkie", 1, true) ~= nil
+    end
+
+    if actor:object("walkie_talkie") ~= nil then
+        return true
+    end
+
+    local dev = actor:item_in_slot(9)
+    if dev then
+        local sec = dev:section()
+        if sec and string_find(sec, "walkie_talkie", 1, true) ~= nil then
+            return true
+        end
+    end
+
+    local found = false
+    actor:iterate_inventory(function(_, item)
+        if not found and item then
+            local sec = item:section()
+            if sec and string_find(sec, "walkie_talkie", 1, true) ~= nil then
+                found = true
+            end
+        end
+    end, actor)
+    return found
+end
+
+local function is_ui_open()
+    local actor = db.actor
+    if not (actor and actor:alive() and level.present()) then
+        return true
+    end
+    if device and device():is_paused() then
+        return true
+    end
+    if actor.is_talking and actor:is_talking() then
+        return true
+    end
+    if actor_menu_mode ~= 0 then
+        return true
+    end
+    if actor_menu and actor_menu.get_last_mode and actor_menu.get_last_mode() ~= 0 then
+        return true
+    end
+    if xrr_chat and xrr_chat.get_box then
+        local ok, box = pcall(xrr_chat.get_box)
+        if ok and box and box.IsShown and box:IsShown() then
+            return true
+        end
+    end
+    if type(main_hud_shown) == "function" and not main_hud_shown() then
+        return true
+    end
+    if level.main_input_receiver and level.main_input_receiver() ~= nil then
+        return true
+    end
+    return false
+end
+
+local function init_ptt_sounds()
+    if _snd_checked then return end
+    _snd_checked = true
+    if not (getFS and sound_object) then return end
+
+    local fs = getFS()
+    local press_candidates = {
+        "device\\pda\\pda_beep_1",
+        "device\\pda\\pda_tip",
+        "radio\\interact\\radio_on",
+    }
+    for _, rel in ipairs(press_candidates) do
+        local ok, exists = pcall(function() return fs:exist("$game_sounds$", rel .. ".ogg") ~= nil end)
+        if ok and exists then
+            local oks, obj = pcall(sound_object, rel)
+            if oks and obj then
+                _snd_press = obj
+                break
+            end
+        end
+    end
+
+    local release_candidates = {
+        "radio\\interact\\radio_off",
+        "device\\pda\\pda_tip",
+        "device\\pda\\pda_beep_1",
+    }
+    for _, rel in ipairs(release_candidates) do
+        local ok, exists = pcall(function() return fs:exist("$game_sounds$", rel .. ".ogg") ~= nil end)
+        if ok and exists then
+            local oks, obj = pcall(sound_object, rel)
+            if oks and obj then
+                _snd_release = obj
+                break
+            end
+        end
+    end
+end
+
+local function play_ptt_beep(is_press)
+    if xr_razom_voip_mcm and xr_razom_voip_mcm.get_ptt_sound and not xr_razom_voip_mcm.get_ptt_sound() then
+        return
+    end
+    if not db.actor then return end
+    init_ptt_sounds()
+    local snd = is_press and _snd_press or _snd_release
+    if not snd then return end
+    pcall(function()
+        snd:play(db.actor, 0, sound_object.s2d)
+        snd.volume = 0.45
+    end)
+end
+
+local function get_ray()
+    if _ray then return _ray end
+    if not ray_pick then return nil end
+    _ray = ray_pick()
+    if not _ray then return nil end
+    _ray_pos = vector()
+    _ray_dir = vector()
+    return _ray
+end
+
+local function is_peer_occluded(cam_pos, peer_pos)
+    if not (cam_pos and peer_pos) then return false end
+    local dx = peer_pos.x - cam_pos.x
+    local dy = peer_pos.y - cam_pos.y
+    local dz = peer_pos.z - cam_pos.z
+    local dist = math_sqrt(dx * dx + dy * dy + dz * dz)
+    if not (dist > 0) or dist <= (RAY_START_OFFSET + RAY_END_CLEARANCE + 0.15) then
+        return false
+    end
+
+    local ray = get_ray()
+    if not ray then return false end
+
+    local inv = 1.0 / dist
+    local ux, uy, uz = dx * inv, dy * inv, dz * inv
+    local range = dist - (RAY_START_OFFSET + RAY_END_CLEARANCE)
+    if range <= 0.05 then return false end
+
+    _ray_pos:set(
+        cam_pos.x + ux * RAY_START_OFFSET,
+        cam_pos.y + uy * RAY_START_OFFSET,
+        cam_pos.z + uz * RAY_START_OFFSET
+    )
+    _ray_dir:set(ux, uy, uz)
+
+    ray:set_flags(RQT_STATIC)
+    ray:set_position(_ray_pos)
+    ray:set_direction(_ray_dir)
+    ray:set_range(range)
+    if db.actor then
+        ray:set_ignore_object(db.actor)
+    end
+
+    local hit = ray:query()
+    if not hit then return false end
+    local hit_dist = ray:get_distance()
+    return hit_dist ~= nil and hit_dist > 0.01 and hit_dist < range
+end
+
+local function get_peer_head_pos(obj)
+    local p = obj:position()
+    if p then
+        return vector():set(p.x, p.y + 1.62, p.z)
+    end
+    return vector():set(0, 0, 0)
+end
+
+local function collect_peers(cam_pos)
+    local out = {}
+    if not XrrPlayers then return out end
+    local players = XrrPlayers()
+    if not players then return out end
+
+    local count = players:GetPeerCount() or 0
+    for i = 1, count do
+        local cid = players:GetPeerLocalIdAt(i)
+        if cid and cid > 0 and cid ~= INVALID_ID then
+            local obj = level.object_by_id(cid)
+            if obj then
+                local nick = players:GetPeerNicknameAt(i) or ""
+                if nick == "" and obj.character_name then
+                    nick = obj:character_name() or ""
+                end
+                if nick == "" and obj.name then
+                    nick = obj:name() or ""
+                end
+                if nick == "" then
+                    nick = "peer_" .. tostring(cid)
+                end
+
+                local hpos = get_peer_head_pos(obj)
+                local occluded = is_peer_occluded(cam_pos, hpos)
+                out[#out + 1] = string_format(
+                    "{\"id\":%d,\"name\":\"%s\",\"pos\":%s,\"occluded\":%s}",
+                    cid,
+                    json_escape(nick),
+                    fmt_vec(hpos),
+                    occluded and "true" or "false"
+                )
+            end
+        end
+    end
+    return out
+end
+
+local function get_local_name()
+    if XrrNet then
+        local ok, net = pcall(XrrNet)
+        if ok and net and net.GetNickName then
+            local okn, nick = pcall(net.GetNickName, net)
+            if okn and nick and nick ~= "" then
+                return nick
+            end
+        end
+    end
+    if db.actor and db.actor.character_name then
+        local okc, nick = pcall(db.actor.character_name, db.actor)
+        if okc and nick and nick ~= "" then
+            return nick
+        end
+    end
+    return "Player"
+end
+
+local function get_last_ip()
+    if axr_main and axr_main.config and axr_main.config.r_value then
+        local ok, ip = pcall(axr_main.config.r_value, axr_main.config, "xrrazom", "last_ip", nil, "")
+        if ok and ip then return tostring(ip) end
+    end
+    return ""
+end
+
+function flush_telemetry()
+    if not ensure_paths() then return end
+
+    local dev = device and device()
+    local cam_pos = dev and dev.cam_pos
+    local cam_dir = dev and dev.cam_dir
+    local cam_top = dev and dev.cam_top
+
+    if not cam_pos and db.actor then
+        cam_pos = db.actor:position()
+    end
+
+    local lvl = (level and level.present() and level.name and level.name()) or ""
+    local peers_json = (lvl ~= "" and cam_pos) and collect_peers(cam_pos) or {}
+
+    local is_host = false
+    if XrrIsHost then
+        local okh, h = pcall(XrrIsHost)
+        if okh then is_host = h and true or false end
+    end
+
+    local in_session = false
+    if XrrIsHosted and XrrIsConnected then
+        local ok1, h = pcall(XrrIsHosted)
+        local ok2, c = pcall(XrrIsConnected)
+        in_session = ((ok1 and h) or (ok2 and c)) and true or false
+    end
+
+    local ts = (time_global and time_global()) or 0
+
+    local json_str = string_format(
+        "{\"timestamp\":%d,\"name\":\"%s\",\"is_host\":%s,\"in_session\":%s,\"last_ip\":\"%s\",\"level\":\"%s\",\"pos\":%s,\"dir\":%s,\"top\":%s,\"has_radio\":%s,\"radio_tx\":%s,\"peers\":[%s]}",
+        ts,
+        json_escape(get_local_name()),
+        is_host and "true" or "false",
+        in_session and "true" or "false",
+        json_escape(get_last_ip()),
+        json_escape(lvl),
+        fmt_vec(cam_pos),
+        fmt_vec(cam_dir),
+        fmt_vec(cam_top),
+        has_radio and "true" or "false",
+        radio_tx and "true" or "false",
+        table_concat(peers_json, ",")
+    )
+
+    if use_direct_write then
+        local df = io.open(final_path, "wb")
+        if df then
+            df:write(json_str)
+            df:flush()
+            df:close()
+        end
+        return
+    end
+
+    local f = io.open(tmp_path, "wb")
+    if not f then return end
+    f:write(json_str)
+    f:flush()
+    f:close()
+
+    local fs = getFS and getFS()
+    if fs and fs.file_rename then
+        pcall(fs.file_rename, fs, tmp_path, final_path, true)
+    end
+
+    local tf = io.open(tmp_path, "rb")
+    if not tf then
+        return
+    end
+    tf:close()
+
+    if os and type(os.rename) == "function" then
+        local ok = os.rename(tmp_path, final_path)
+        if not ok and type(os.remove) == "function" then
+            os.remove(final_path)
+            os.rename(tmp_path, final_path)
+        end
+        local tf2 = io.open(tmp_path, "rb")
+        if not tf2 then
+            return
+        end
+        tf2:close()
+    end
+
+    use_direct_write = true
+    local df = io.open(final_path, "wb")
+    if df then
+        df:write(json_str)
+        df:flush()
+        df:close()
+    end
+end
+
+local function on_key_press(key)
+    local ptt_key = get_ptt_key()
+    if ptt_key == -1 or key ~= ptt_key then return end
+    has_radio = check_has_radio()
+    if not has_radio or is_ui_open() then return end
+
+    if not radio_tx then
+        radio_tx = true
+        play_ptt_beep(true)
+        flush_telemetry()
+    end
+end
+
+local function on_key_release(key)
+    local ptt_key = get_ptt_key()
+    if ptt_key == -1 or key ~= ptt_key then return end
+
+    if radio_tx then
+        radio_tx = false
+        play_ptt_beep(false)
+        flush_telemetry()
+    end
+end
+
+local function on_actor_menu_mode(mode)
+    actor_menu_mode = tonumber(mode) or 0
+    if actor_menu_mode ~= 0 and radio_tx then
+        radio_tx = false
+        play_ptt_beep(false)
+        flush_telemetry()
+    end
+end
+
+local function actor_on_update()
+    if not (db.actor and db.actor:alive() and level.present()) then
+        if radio_tx then
+            radio_tx = false
+            flush_telemetry()
+        end
+        return
+    end
+
+    local next_has_radio = check_has_radio()
+    local force_flush = false
+
+    if next_has_radio ~= has_radio then
+        has_radio = next_has_radio
+        force_flush = true
+    end
+
+    if radio_tx and (not has_radio or is_ui_open()) then
+        radio_tx = false
+        play_ptt_beep(false)
+        force_flush = true
+    end
+
+    local now = (time_global and time_global()) or 0
+    if force_flush or (now < last_update_ms) or (now - last_update_ms >= UPDATE_INTERVAL_MS) then
+        last_update_ms = now
+        flush_telemetry()
+    end
+end
+
+local function actor_on_first_update()
+    last_update_ms = 0
+    _ray = nil
+    has_radio = check_has_radio()
+    flush_telemetry()
+end
+
+local function actor_on_net_destroy()
+    last_update_ms = 0
+    _ray = nil
+    actor_menu_mode = 0
+    radio_tx = false
+    flush_telemetry()
+end
+
+local function on_option_change()
+    has_radio = check_has_radio()
+    if not has_radio and radio_tx then
+        radio_tx = false
+        flush_telemetry()
+    end
+end
+
+function on_game_start()
+    last_update_ms = 0
+    _ray = nil
+    actor_menu_mode = 0
+    radio_tx = false
+    use_direct_write = false
+    RegisterScriptCallback("actor_on_first_update", actor_on_first_update)
+    RegisterScriptCallback("actor_on_update", actor_on_update)
+    RegisterScriptCallback("on_key_press", on_key_press)
+    RegisterScriptCallback("on_key_release", on_key_release)
+    RegisterScriptCallback("actor_on_net_destroy", actor_on_net_destroy)
+    RegisterScriptCallback("ActorMenu_on_mode_changed", on_actor_menu_mode)
+    RegisterScriptCallback("on_option_change", on_option_change)
+    RegisterScriptCallback("mcm_option_restore_default", on_option_change)
+end

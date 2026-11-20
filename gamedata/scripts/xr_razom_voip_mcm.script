@@ -1,0 +1,91 @@
+--[[
+  xrRazom VOIP Telemetry — Mod Configuration Menu (MCM) options.
+  Default Push-to-Talk key is Z (DIK_keys.DIK_Z = 44) and can be rebound in MCM.
+  By default, every player always carries a built-in walkie-talkie (always_has_radio = true).
+]]
+
+local DEFAULT_PTT_KEY = (DIK_keys and DIK_keys.DIK_Z) or 44
+local DEFAULT_ALWAYS_HAS_RADIO = true
+local DEFAULT_REQUIRE_EQUIPPED = false
+local DEFAULT_PTT_SOUND = true
+
+local function get_config(key)
+    if not (ui_mcm and ui_mcm.get) then
+        return nil
+    end
+    return ui_mcm.get("xr_razom_voip/" .. key)
+end
+
+function get_ptt_key()
+    local val = get_config("radio_ptt_key")
+    if val == nil then
+        return (DIK_keys and DIK_keys.DIK_Z) or DEFAULT_PTT_KEY
+    end
+    return tonumber(val) or ((DIK_keys and DIK_keys.DIK_Z) or DEFAULT_PTT_KEY)
+end
+
+function get_always_has_radio()
+    local val = get_config("always_has_radio")
+    if val == nil then
+        return DEFAULT_ALWAYS_HAS_RADIO
+    end
+    return val and true or false
+end
+
+function get_require_equipped_radio()
+    local val = get_config("require_equipped_radio")
+    if val == nil then
+        return DEFAULT_REQUIRE_EQUIPPED
+    end
+    return val and true or false
+end
+
+function get_ptt_sound()
+    local val = get_config("ptt_sound")
+    if val == nil then
+        return DEFAULT_PTT_SOUND
+    end
+    return val and true or false
+end
+
+function on_mcm_load()
+    local default_key = (DIK_keys and DIK_keys.DIK_Z) or DEFAULT_PTT_KEY
+    return {
+        id = "xr_razom_voip",
+        sh = true,
+        gr = {
+            {
+                id = "title",
+                type = "slide",
+                link = "ui_options_slider_player",
+                text = "ui_mcm_xr_razom_voip_title",
+                size = { 512, 50 },
+                spacing = 20,
+            },
+            {
+                id = "radio_ptt_key",
+                type = "key_bind",
+                val = 2,
+                def = default_key,
+            },
+            {
+                id = "always_has_radio",
+                type = "check",
+                val = 1,
+                def = DEFAULT_ALWAYS_HAS_RADIO,
+            },
+            {
+                id = "require_equipped_radio",
+                type = "check",
+                val = 1,
+                def = DEFAULT_REQUIRE_EQUIPPED,
+            },
+            {
+                id = "ptt_sound",
+                type = "check",
+                val = 1,
+                def = DEFAULT_PTT_SOUND,
+            },
+        },
+    }
+end

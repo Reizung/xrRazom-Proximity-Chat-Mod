@@ -1,0 +1,27 @@
+# Python caches & virtual environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+
+# Local runtime & user configuration files
+voip_config.json
+voip_telemetry.json
+voip_telemetry.tmp
+*.log
+
+# Release archives
+*.zip
+*.rar
+*.7z
+
+# OS & editor files
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp
+*~
