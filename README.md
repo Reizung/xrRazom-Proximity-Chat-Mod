@@ -13,6 +13,13 @@ A standalone, open-source **3D proximity + walkie-talkie VOIP** mod and companio
 
 ---
 
+## Download
+
+- **[1-Click Direct Download: xrRazom_VOIP_Telemetry.zip (Latest Release)](https://github.com/Reizung/xrRazom-Proximity-Chat-Mod/releases/latest/download/xrRazom_VOIP_Telemetry.zip)**
+- All releases & release notes: [Releases page](https://github.com/Reizung/xrRazom-Proximity-Chat-Mod/releases/latest)
+
+---
+
 ## Features
 
 1. **Directional 3D Proximity Voice (Hands-Free / Open Mic)**
