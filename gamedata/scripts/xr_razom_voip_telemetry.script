@@ -7,7 +7,10 @@
 local UPDATE_INTERVAL_MS = 50   -- ~20 Hz
 local RAY_START_OFFSET   = 0.45
 local RAY_END_CLEARANCE  = 0.55
+local RAY_MAX_STEPS      = 12   -- max permeable foliage/fence layers to pierce
+local RAY_STEP_EPS       = 0.06 -- advance past permeable hit surface (meters)
 local RQT_STATIC         = 2    -- rq_target.rqtStatic
+local FL_PASSABLE        = 128  -- SGameMtl::flPassable (1 << 7)
 local INVALID_ID         = 65535
 
 local last_update_ms     = 0
@@ -26,10 +29,33 @@ local _snd_release       = nil
 local _snd_checked       = false
 
 local math_sqrt          = math.sqrt
+local math_floor         = math.floor
 local string_format      = string.format
 local string_gsub        = string.gsub
 local string_find        = string.find
+local string_lower       = string.lower
 local table_concat       = table.concat
+
+-- Substrings identifying non-occluding static materials (bushes, reeds, wire fences, cloth, water).
+-- Intentionally excludes "grass", which in gamemtl.xr is solid terrain ground rather than tall foliage.
+local NON_OCCLUDING_MATERIALS = {
+    "bush",       -- materials\bush, materials\bush_sux (bushes, reeds/vass, shrubs)
+    "setka",      -- materials\setka_rabica (chain-link wire fences)
+    "rabica",
+    "fake",       -- materials\fake, fake_ladders, fake_slide (invisible clips)
+    "occ",        -- materials\occ (HOM portal planes)
+    "cloth",      -- materials\cloth (tents, hanging fabric)
+    "water",      -- materials\water, water_radiation
+    "flora",
+    "foliage",
+    "reed",
+    "leaf",
+    "leaves",
+    "mesh",
+    "wire",
+    "grate",
+    "death",
+}
 
 local function ensure_paths()
     if final_path then return true end
@@ -212,6 +238,45 @@ local function get_ray()
     return _ray
 end
 
+local function is_permeable_hit(ray)
+    if not ray.get_result then
+        return false
+    end
+    local res = ray:get_result()
+    if not res then
+        return false
+    end
+
+    local flags = res.material_flags
+    if type(flags) == "number" and (math_floor(flags / FL_PASSABLE) % 2 == 1) then
+        return true
+    end
+
+    local vis_tr = res.material_vis_transparency_factor
+    if type(vis_tr) == "number" and vis_tr >= 0.30 then
+        return true
+    end
+
+    -- In X-Ray gamemtl.xr, fSndOcclusionFactor is sound transmission (1.0 = open, 0.0 = blocked).
+    -- Solid walls max out at 0.75 (stucco) / 0.60 (concrete), while bushes/reeds/fences are >= 0.90.
+    local snd_occ = res.material_snd_occlusion_factor
+    if type(snd_occ) == "number" and snd_occ >= 0.85 then
+        return true
+    end
+
+    local mname = res.material_name
+    if type(mname) == "string" and mname ~= "" then
+        local low = string_lower(mname)
+        for i = 1, #NON_OCCLUDING_MATERIALS do
+            if string_find(low, NON_OCCLUDING_MATERIALS[i], 1, true) then
+                return true
+            end
+        end
+    end
+
+    return false
+end
+
 local function is_peer_occluded(cam_pos, peer_pos)
     if not (cam_pos and peer_pos) then return false end
     local dx = peer_pos.x - cam_pos.x
@@ -227,28 +292,49 @@ local function is_peer_occluded(cam_pos, peer_pos)
 
     local inv = 1.0 / dist
     local ux, uy, uz = dx * inv, dy * inv, dz * inv
-    local range = dist - (RAY_START_OFFSET + RAY_END_CLEARANCE)
-    if range <= 0.05 then return false end
+    local traveled = RAY_START_OFFSET
+    local total_limit = dist - RAY_END_CLEARANCE
+    if total_limit - traveled <= 0.05 then return false end
 
-    _ray_pos:set(
-        cam_pos.x + ux * RAY_START_OFFSET,
-        cam_pos.y + uy * RAY_START_OFFSET,
-        cam_pos.z + uz * RAY_START_OFFSET
-    )
     _ray_dir:set(ux, uy, uz)
-
     ray:set_flags(RQT_STATIC)
-    ray:set_position(_ray_pos)
     ray:set_direction(_ray_dir)
-    ray:set_range(range)
     if db.actor then
         ray:set_ignore_object(db.actor)
     end
 
-    local hit = ray:query()
-    if not hit then return false end
-    local hit_dist = ray:get_distance()
-    return hit_dist ~= nil and hit_dist > 0.01 and hit_dist < range
+    for _ = 1, RAY_MAX_STEPS do
+        local remaining = total_limit - traveled
+        if remaining <= 0.05 then
+            return false
+        end
+
+        _ray_pos:set(
+            cam_pos.x + ux * traveled,
+            cam_pos.y + uy * traveled,
+            cam_pos.z + uz * traveled
+        )
+        ray:set_position(_ray_pos)
+        ray:set_range(remaining)
+
+        local hit = ray:query()
+        if not hit then
+            return false
+        end
+
+        local hit_dist = ray:get_distance()
+        if hit_dist == nil or hit_dist >= remaining then
+            return false
+        end
+
+        if hit_dist > 0.01 and not is_permeable_hit(ray) then
+            return true
+        end
+
+        traveled = traveled + (hit_dist > 0 and hit_dist or 0) + RAY_STEP_EPS
+    end
+
+    return false
 end
 
 local function get_peer_head_pos(obj)

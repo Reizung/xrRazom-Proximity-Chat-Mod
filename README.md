@@ -25,8 +25,8 @@ A standalone, open-source **3D proximity + walkie-talkie VOIP** mod and companio
 1. **Directional 3D Proximity Voice (Hands-Free / Open Mic)**
    - Voice-activated (VAD) with an adjustable noise gate — no Push-to-Talk needed when talking nearby.
    - Real-time 3D stereo panning and subtle Interaural Time Delay (ITD) derived from the player's camera orientation (`cam_pos`, `cam_dir`, `cam_top`).
-   - Smooth distance rolloff and high-frequency air absorption (configurable max proximity range, default 50 m).
-   - **Wall & Terrain Occlusion:** Casts a static `ray_pick` (`rqtStatic`) between players to muffle voices behind solid walls, buildings, and terrain.
+   - Smooth distance rolloff and high-frequency air absorption (configurable max proximity range, default 75 m).
+   - **Wall & Terrain Occlusion:** Casts a multi-step static `ray_pick` (`rqtStatic`) between players that pierces permeable foliage, reeds, bushes, and chain-link fences while muffling voices behind solid walls, buildings, and terrain.
 
 2. **Walkie-Talkie Radio Voice (Hold `Z` — Rebindable in MCM)**
    - By default, all players always have a built-in walkie-talkie (`always_has_radio = true`). You can optionally require a walkie-talkie item in inventory or slot 9 via MCM.

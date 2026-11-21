@@ -335,9 +335,9 @@ def build_squelch_tail(sample_rate: int = SAMPLE_RATE) -> np.ndarray:
 
 # Precomputed shared SOS filter banks (24 kHz)
 SOS_RADIO_BP = signal.butter(3, [380.0, 2750.0], btype="bandpass", fs=SAMPLE_RATE, output="sos")
-SOS_OCCLUDE_LP = signal.butter(2, 680.0, btype="lowpass", fs=SAMPLE_RATE, output="sos")
-SOS_DIST_MID_LP = signal.butter(2, 2600.0, btype="lowpass", fs=SAMPLE_RATE, output="sos")
-SOS_DIST_FAR_LP = signal.butter(2, 1350.0, btype="lowpass", fs=SAMPLE_RATE, output="sos")
+SOS_OCCLUDE_LP = signal.butter(2, 1200.0, btype="lowpass", fs=SAMPLE_RATE, output="sos")
+SOS_DIST_MID_LP = signal.butter(2, 3400.0, btype="lowpass", fs=SAMPLE_RATE, output="sos")
+SOS_DIST_FAR_LP = signal.butter(2, 1850.0, btype="lowpass", fs=SAMPLE_RATE, output="sos")
 SOS_STATIC_BP = signal.butter(2, [420.0, 3200.0], btype="bandpass", fs=SAMPLE_RATE, output="sos")
 
 SFX_PTT_PLING = build_ptt_pling(SAMPLE_RATE)
@@ -422,8 +422,8 @@ class SpatialRadioMixer:
         self.prox_volume = 1.0
         self.radio_volume = 0.85
         self.radio_static_level = 0.045
-        self.prox_max_dist = 50.0
-        self.prox_ref_dist = 2.0
+        self.prox_max_dist = 75.0
+        self.prox_ref_dist = 5.5
         self.local_ptt_feedback = True
 
         self._local_sfx_buf = np.zeros(0, dtype=np.float32)
@@ -542,12 +542,12 @@ class SpatialRadioMixer:
         if dist >= self.prox_max_dist:
             return 0.0, 0.0, dist, 0, 0, 0.0
 
-        # Distance rolloff
+        # Distance rolloff (gentler falloff so voices carry naturally outdoors)
         if dist <= self.prox_ref_dist:
             dist_gain = 1.0
         else:
             norm_d = (dist - self.prox_ref_dist) / max(1.0, self.prox_max_dist - self.prox_ref_dist)
-            dist_gain = ((self.prox_ref_dist / dist) ** 1.15) * max(0.0, 1.0 - norm_d * norm_d)
+            dist_gain = ((self.prox_ref_dist / dist) ** 0.75) * max(0.0, 1.0 - (norm_d ** 2.4))
 
         # X-Ray left-handed basis: +X right, +Y up, +Z forward => right = cross(top, dir)
         fwd = normalize(listener.dir)
@@ -572,10 +572,10 @@ class SpatialRadioMixer:
         pan_r = raw_r * 0.92 + raw_l * 0.08
 
         # Rear-facing gentle dampening (behind your head sounds slightly softer)
-        rear_gain = 1.0 if front_dot >= 0.0 else (1.0 + 0.18 * front_dot)
+        rear_gain = 1.0 if front_dot >= 0.0 else (1.0 + 0.12 * front_dot)
 
-        # Wall occlusion gain penalty
-        occ_gain = 0.42 if occluded else 1.0
+        # Wall occlusion gain penalty (moderate, keeps voices intelligible behind walls)
+        occ_gain = 0.68 if occluded else 1.0
 
         total_gain = dist_gain * rear_gain * occ_gain * self.prox_volume
 
@@ -585,9 +585,9 @@ class SpatialRadioMixer:
         delay_r = itd_samples if pan < 0.0 else 0
 
         # Distance air absorption blend (0 = bright close, 1 = muffled distant)
-        lp_blend = clamp((dist - 4.0) / max(1.0, self.prox_max_dist - 4.0), 0.0, 1.0)
+        lp_blend = clamp((dist - 12.0) / max(1.0, self.prox_max_dist - 12.0), 0.0, 1.0)
         if front_dot < -0.2:
-            lp_blend = max(lp_blend, 0.25)
+            lp_blend = max(lp_blend, 0.18)
 
         return pan_l * total_gain, pan_r * total_gain, dist, delay_l, delay_r, lp_blend
 
@@ -1271,7 +1271,7 @@ class VoipGui:
         self.var_prox_vol = tk.DoubleVar(value=1.0)
         self.var_radio_vol = tk.DoubleVar(value=0.85)
         self.var_static = tk.DoubleVar(value=0.045)
-        self.var_max_dist = tk.DoubleVar(value=50.0)
+        self.var_max_dist = tk.DoubleVar(value=75.0)
         self.var_lb_dist = tk.DoubleVar(value=8.0)
         self.var_lb_angle = tk.DoubleVar(value=45.0)
 
@@ -1324,10 +1324,10 @@ class VoipGui:
 
         self._slider(lf_mix, "Microphone Gain", self.var_mic_gain, 0.2, 3.0)
         self._slider(lf_mix, "Noise Gate (Proximity Voice)", self.var_gate, 0.002, 0.08)
-        self._slider(lf_mix, "Proximity Volume (3D Voice)", self.var_prox_vol, 0.0, 2.0)
+        self._slider(lf_mix, "Proximity Volume (3D Voice)", self.var_prox_vol, 0.0, 2.5)
         self._slider(lf_mix, "Walkie-Talkie Volume", self.var_radio_vol, 0.0, 2.0)
         self._slider(lf_mix, "Walkie-Talkie Static", self.var_static, 0.0, 0.14)
-        self._slider(lf_mix, "Max Proximity Distance (m)", self.var_max_dist, 15.0, 90.0)
+        self._slider(lf_mix, "Max Proximity Distance (m)", self.var_max_dist, 20.0, 120.0)
 
         row_chk = ttk.Frame(lf_mix)
         row_chk.pack(fill="x", padx=8, pady=6)
@@ -1353,7 +1353,7 @@ class VoipGui:
         btn_ptt.pack(side="right")
         btn_ptt.bind("<ButtonPress-1>", self._on_btn_ptt_press)
         btn_ptt.bind("<ButtonRelease-1>", self._on_btn_ptt_release)
-        self._slider(lf_lb, "Test Distance (m)", self.var_lb_dist, 0.5, 55.0)
+        self._slider(lf_lb, "Test Distance (m)", self.var_lb_dist, 0.5, 80.0)
         self._slider(lf_lb, "Direction (-90° Left / +90° Right)", self.var_lb_angle, -180.0, 180.0)
 
         self.lbl_mic = ttk.Label(self.root, text="Mic Level: [----------]", style="Root.TLabel")
